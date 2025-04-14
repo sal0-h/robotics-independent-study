@@ -79,7 +79,7 @@ class PID:
         self.i_err_window_data_angle.append(err)
         self.i_err_angle_integral = np.sum(self.i_err_window_data_angle) * self.i_err_dt
 
-        
+    
     def reset_integral_errors(self):
         '''Reset the integral errors, both for distance and angle.
            This is used when a waypoint is reached and a new one shall start.'''
@@ -89,40 +89,48 @@ class PID:
         self.i_err_window_data_angle = deque([0] * self.i_err_window_len,
                                               maxlen=self.i_err_window_len)
         
-        
+
+    def bound_v(self, value):
+        sign = -1 if value < 0 else 1
+        return min(abs(value), self.v_max) * sign
+    
+    def bound_o(self, value):
+        sign = -1 if value < 0 else 1       
+        return min(abs(value), self.omega_max) * sign
+    
     def get_linear_velocity_P(self, err_d):
         '''Get error in distance and return P component of linear velocity'''
         ##### your code here
-        return 0
+        return self.bound_v(self.p_gain_distance * err_d)
 
     
     def get_linear_velocity_I(self, err_d):
         '''Get error in distance and return I component of linear velocity'''
         ##### your code here
-        return 0
+        return self.bound_v(self.i_gain_distance * err_d)
 
 
     def get_linear_velocity_D(self, err_d):
         '''Get error in distance and return D component of linear velocity'''
         ##### your code here
-        return 0
+        return self.bound_v(self.d_gain_distance * err_d)
 
     
     def get_angular_velocity_P(self, err_angle):
         '''Get error in angle and return P component of angular velocity'''
         ##### your code here
-        return 0
+        return self.bound_o(self.p_gain_angle * err_angle)
 
 
     def get_angular_velocity_I(self, err_angle):
         '''Get error in angle and return I component of angular velocity'''
         ##### your code here
-        return 0
+        return self.bound_o(self.i_gain_angle * err_angle)
 
     def get_angular_velocity_D(self, err_angle):
         '''Get error in angle and return I component of angular velocity'''
         ##### your code here
-        return 0
+        return self.bound_o(self.d_gain_angle * err_angle)
 
     # The following three empty methods are included for completeness, to deal with a car-like
     # vehicle with two parallel front steering wheels.
@@ -290,6 +298,21 @@ class FollowPathPID:
 
         self.cnt = self.cnt + 1
 
+    # {'pv': True, 'po': True,
+    # 'iv': True, 'io': False,
+    # 'dv': False, 'do': False}):
+    def combine_linear_errors(self, err_p, err_i, err_d, err_p_a, err_i_a, err_d_a):
+        # O(1), don't worry
+        L = [(k, 1 if v else 0) for (k, v) in self.pid_components.items()]
+        d = {k : v for (k, v) in L}
+        self.vel.linear.x = self.pid.get_linear_velocity_P(err_p) * d['pv'] \
+                + self.pid.get_linear_velocity_I(err_i) * d['iv'] \
+                + self.pid.get_linear_velocity_D(err_d) * d['dv'] \
+        
+        self.vel.angular.z = self.pid.get_linear_velocity_P(err_p) * d['pv'] \
+                + self.pid.get_linear_velocity_I(err_i) * d['iv'] \
+                + self.pid.get_linear_velocity_D(err_d) * d['dv'] \
+                    
     def move_to_point(self, x, y):
         '''Move to waypoint of coordinates (x,y).
           (x,y) is the next point in the given reference path to follow.
@@ -302,7 +325,38 @@ class FollowPathPID:
           (inside this same function) to the /cmd_vel topic.
         '''
         ##### your code here
-        return False
+        # First, find proportional error for velocity
+        # I am assuming I use odometry as where I am.
+        err_dist_p = np.sqrt((xs - self.odo_pos_x) ** 2 + (ys - self.odo_pos_y) ** 2) - self.d_offset
+        
+        # Now integral error (this is weird)
+        self.pid.update_integral_error_distance(err_dist_p)
+        err_dist_i = self.pid.i_err_distance
+        
+        # Now derivative error
+        err_dist_d = 0 #TODO: fix me
+        
+        
+        # Now angular proportional
+        theta_desired = np.arctan2(ys - self.odo_pos_y, xs - self.odo_pos_x)
+        err_angle = theta_desired - self.odo_yaw
+        err_angle_normalized = np.arctan2(np.sin(err_angle), np.cos(err_angle))
+        
+        # Now update integral
+        self.pid.update_integral_error_distance(err_angle_normalized)
+        err_angle_i = self.pid.i_err_angle_integral
+        
+        # Now derivative error
+        err_angle_d = 0 #TODO: fix me
+        
+        # set velocities
+        self.combine_linear_errors(err_dist_p, err_dist_i, err_dist_d,
+                                   err_angle_normalized, err_angle_i, err_angle_d)
+        
+        # goal reached logic (not looking at angle)
+        if abs(err_dist_d) < self.pos_tolerance:
+            self.pid.reset_integral_errors()
+            return True
     
 
     def publish_path(self, x, y):
