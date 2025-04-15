@@ -228,7 +228,7 @@ class FollowPathPID:
         self.position_tolerance = 0.04
 
         # The offset from the waypoint, to ensure a smooth and continuous motion along the path
-        self.distance_offset = 0.05
+        self.distance_offset = 0.1
 
         # set a dictionary that stores the choice of the pid that must be used for control
         self.pid_components = _control_components
@@ -405,11 +405,11 @@ class PathGenerator:
         
         path_geometries = { 'ellipse': (self.elliptical_path_get_next, self.init_ellipse),
                             'spiral' : (self.spiraling_path_get_next, self.init_spiral),
-                            'sample' : (self.sample_path_get_next, self.init_sample) }
+                            'sample' : (self.sample_path_get_next, self.init_sample), 
+                            'wall': (self.wall_path_gen_next, self.init_wall)}
         
         self.get_next_point_in_path = path_geometries[_path][0]
         self.path_init = path_geometries[_path][1]
-        print("Path parameters:", path_parameters)
         self.path_init(*_path_parameters)
 
         
@@ -437,7 +437,19 @@ class PathGenerator:
         self.y = self.yc + self.amplitude_y * np.sin(s)
         #print "[s: %4.2f] (%5.2f, %5.2f)" % (s, self.x, self.y)
         return (self.x, self.y)
-            
+
+    def init_sample(self):
+        self.sample_path = [ (1, 0), (1.6, 0.7), (1.6,2), (1.3,2.7), (0.4, 3.2), (1, 4), (2.5, 4) ] 
+        self.sample_path_idx = 0
+
+    def sample_path_get_next(self, s=None):
+        if self.sample_path_idx >= len(self.sample_path):
+            print('END of sample path!')
+            return (None, None)
+        self.x, self.y = self.sample_path[self.sample_path_idx]
+        self.sample_path_idx += 1
+        return (self.x, self.y)
+    
     def init_spiral(self, xc=0.0, yc=0.0, r_growth=0.5):
         '''Initialize the parameters for generating a spiraling path.
            Inputs:
@@ -458,19 +470,44 @@ class PathGenerator:
         self.y = self.yc + r * np.sin(s)
         #print "[s: %4.2f] (%5.2f, %5.2f)" % (s, self.x, self.y)
         return (self.x, self.y)
+    
+    def init_wall(self, x0=0.0, y0=0.0, x1=1.0, y1=1.0, perp_length=2.0):
+        self.line_x0, self.line_y0 = x0, y0
+        self.line_dx = x1 - x0
+        self.line_dy = y1 - y0
+        self.line_length = np.hypot(self.line_dx, self.line_dy)
+        self.unit_dx = self.line_dx / self.line_length
+        self.unit_dy = self.line_dy / self.line_length
         
+        # Prepare second segment (perpendicular)
+        self.perp_started = False
+        self.perp_length = perp_length
+        self.perp_dx = -self.unit_dy
+        self.perp_dy = self.unit_dx
+        self.perp_x0 = self.line_x0 + self.line_length * self.unit_dx
+        self.perp_y0 = self.line_y0 + self.line_length * self.unit_dy
 
-    def init_sample(self):
-        self.sample_path = [ (1, 0), (1.6, 0.7), (1.6,2), (1.3,2.7), (0.4, 3.2), (1, 4), (2.5, 4) ] 
-        self.sample_path_idx = 0
 
-    def sample_path_get_next(self, s=None):
-        if self.sample_path_idx >= len(self.sample_path):
-            print('END of sample path!')
-            return (None, None)
-        self.x, self.y = self.sample_path[self.sample_path_idx]
-        self.sample_path_idx += 1
-        return (self.x, self.y)
+    def wall_path_gen_next(self, s=0.0):
+        if not self.perp_started:
+            if s <= self.line_length:
+                self.x = self.line_x0 + s * self.unit_dx
+                self.y = self.line_y0 + s * self.unit_dy
+                return (self.x, self.y)
+            else:
+                self.perp_started = True
+                # reset s for second segment
+                s = 0.0
+
+        if self.perp_started:
+            if s <= self.perp_length:
+                self.x = self.perp_x0 + s * self.perp_dx
+                self.y = self.perp_y0 + s * self.perp_dy
+                return (self.x, self.y)
+            else:
+                print("END of full wall path (main + perpendicular)!")
+                return (None, None)
+
                             
 
 ################################# Main() ########################
@@ -486,14 +523,15 @@ if __name__ == '__main__':
                                               'dv': False, 'do': False} )
 
         # read the path type from command line
-        path_type = rospy.get_param('~path', 'sample') 
+        path_type = rospy.get_param('~path', 'wall') 
         print('Path type: ', path_type)
 
         # some default parameters for the paths, can be changed as wished,
         # or passed as command line parameters
         path_parameters = { 'ellipse': (0.0, 0.0, 3.0, 2.0),
                             'spiral' : (0.0, 0.0, 0.5),
-                            'sample' : () }
+                            'sample' : (),
+                            'wall': (0, 0, 3, 3, 10)}
                             
         path_gen = PathGenerator(path_type, path_parameters[path_type])
 
