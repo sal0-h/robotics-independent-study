@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#! /usr/bin/env python
 
 # roslaunch turtlebot3_gazebo turtlebot3_empty_world.launch
 
@@ -67,6 +67,8 @@ class PID:
                 
         self.v_max = _v_lin_max
         self.omega_max = _v_ang_max
+        
+        self.previous_error_distance, self.previous_error_angle = (0, 0)
 
         
     def update_integral_error_distance(self, err):
@@ -88,8 +90,9 @@ class PID:
 
         self.i_err_window_data_angle = deque([0] * self.i_err_window_len,
                                               maxlen=self.i_err_window_len)
+        self.i_err_distance = 0
+        self.i_err_angle_integral = 0
         
-
     def bound_v(self, value):
         sign = -1 if value < 0 else 1
         return min(abs(value), self.v_max) * sign
@@ -107,13 +110,17 @@ class PID:
     def get_linear_velocity_I(self, err_d):
         '''Get error in distance and return I component of linear velocity'''
         ##### your code here
-        return self.bound_v(self.i_gain_distance * err_d)
+        self.update_integral_error_distance(err_d)
+        err_dist_i = self.i_err_distance
+        return self.bound_v(self.i_gain_distance * err_dist_i)
 
 
     def get_linear_velocity_D(self, err_d):
         '''Get error in distance and return D component of linear velocity'''
         ##### your code here
-        return self.bound_v(self.d_gain_distance * err_d)
+        derivative = (err_d - self.previous_error_distance) / self.i_err_dt
+        self.previous_error_distance = err_d
+        return self.bound_v(self.d_gain_distance * derivative)
 
     
     def get_angular_velocity_P(self, err_angle):
@@ -125,31 +132,35 @@ class PID:
     def get_angular_velocity_I(self, err_angle):
         '''Get error in angle and return I component of angular velocity'''
         ##### your code here
-        return self.bound_o(self.i_gain_angle * err_angle)
+        self.update_integral_error_angle(err_angle)
+        err_angle_i = self.i_err_angle_integral
+        return self.bound_o(self.i_gain_angle * err_angle_i)
 
     def get_angular_velocity_D(self, err_angle):
-        '''Get error in angle and return I component of angular velocity'''
+        '''Get error in angle and return D component of angular velocity'''
         ##### your code here
-        return self.bound_o(self.d_gain_angle * err_angle)
+        derivative = (err_angle - self.previous_error_angle) / self.i_err_dt
+        self.previous_error_angle = err_angle
+        return self.bound_o(self.d_gain_angle * derivative)
 
     # The following three empty methods are included for completeness, to deal with a car-like
     # vehicle with two parallel front steering wheels.
     # You don't have to complete them (for now).
     
-    def get_steering_angle_P(self, err_angle):
-        '''Get error in angle and return P component of steering angle'''
-        pass
-        return 0
+    # def get_steering_angle_P(self, err_angle):
+    #     '''Get error in angle and return P component of steering angle'''
+    #     pass
+    #     return 0
 
-    def get_steering_angle_I(self, err_angle):
-        '''Get error in angle and return I component of steering angle'''
-        pass
-        return 0
+    # def get_steering_angle_I(self, err_angle):
+    #     '''Get error in angle and return I component of steering angle'''
+    #     pass
+    #     return 0
 
-    def get_steering_angle_D(self, err_angle):
-        '''Get error in angle and return D component of steering angle'''
-        pass
-        return 0
+    # def get_steering_angle_D(self, err_angle):
+    #     '''Get error in angle and return D component of steering angle'''
+    #     pass
+    #     return 0
 
     
 ################################# class FollowPathPID ########################
@@ -161,8 +172,8 @@ class FollowPathPID:
     '''
 
     def __init__(self, _control_components={'pv': True, 'po': True,
-                                            'iv': True, 'io': False,
-                                            'dv': False, 'do': False}):
+                                            'iv': True, 'io': True,
+                                            'dv': True, 'do': True}):
         '''
            Initialize all the elements and variables necessary to implement PID-based path following. 
            First, all robot- and ros-specific stuff are initialized, then PID-related stuff.
@@ -177,7 +188,7 @@ class FollowPathPID:
         
         #### Initialization of robot- and ros-specific variables
         
-        self.robot_model = rospy.get_param('~robot_name', 'turtlebot3_waffle')   # use 'mobile_base' for turtlebot2
+        self.robot_model = rospy.get_param('~robot_name', 'turtlebot3_burger')   # use 'mobile_base' for turtlebot2
         print('Robot model: ', self.robot_model)
 
         if 'turtlebot2' in self.robot_model:
@@ -198,7 +209,7 @@ class FollowPathPID:
         self.angular_vel_max = rospy.get_param('~max_ang_vel', 0.85)
 
         # Action rate
-        self.frequency_updates = 100
+        self.frequency_updates = 100.0
         self.Rate = rospy.Rate(self.frequency_updates)
 
         
@@ -218,14 +229,14 @@ class FollowPathPID:
         # Use _name_of_param:=value to change its value on the command line. Note the prefixing _ 
         # All parameters are passed explicitly for the sake of being comprehensive
         
-        _p_gain_distance = rospy.get_param('~p_gain_distance', 0.7)
-        _p_gain_angle = rospy.get_param('~p_gain_angle', 0.8)
+        _p_gain_distance = rospy.get_param('~p_gain_distance', 0.5)
+        _p_gain_angle = rospy.get_param('~p_gain_angle', 3)
         _i_gain_distance = rospy.get_param('~i_gain_distance', 0.9)
-        _i_gain_angle = rospy.get_param('~i_gain_angle', 0.0)
+        _i_gain_angle = rospy.get_param('~i_gain_angle', 0.1)
         _i_err_window_len = rospy.get_param('~i_err_window_len', 50)
         _i_err_dt = rospy.get_param('~i_err_dt', 1 / self.frequency_updates)
-        _d_gain_distance = rospy.get_param('~d_gain_distance', 0.0)
-        _d_gain_angle = rospy.get_param('~d_gain_angle', 0.0)
+        _d_gain_distance = rospy.get_param('~d_gain_distance', 0.2)
+        _d_gain_angle = rospy.get_param('~d_gain_angle', 0.2)
         _v_max = self.linear_vel_max
         _v_ang_max = self.angular_vel_max
 
@@ -248,18 +259,22 @@ class FollowPathPID:
         # Just a counter to print out information selectively
         self.cnt = 0
 
-        print('Wait for first odometry data...', end='')
+        print('Wait for first odometry data...')
         while (self.odo_x == self.odo_y == self.odo_yaw):
             self.Rate.sleep()
         print('done!')
         
         # Just to be sure that some entity is providing time and time is passing
-        print('Wait for a clock ...', end='')
+        print('Wait for a clock ...')
         while rospy.get_rostime() == 0:
             self.Rate.sleep()
         print('done!')
                 
-        print(f"\nRobot initial pose: ({self.odo_x:5.2f}, {self.odo_y:5.2f}, {np.degrees(self.odo_yaw):5.0f})")
+        print("\nRobot initial pose: ({:5.2f}, {:5.2f}, {:5.0f})".format(
+            self.odo_x,
+            self.odo_y,
+            np.degrees(self.odo_yaw)
+        ))
         # Store initial position
         self.odo_xstart = self.odo_x
         self.odo_ystart = self.odo_y
@@ -289,8 +304,13 @@ class FollowPathPID:
         self.odo_angle_x = 1.0 - 2.0 * (q[1]**2 + q[2]**2) # cosy
 
         if not (self.cnt % 500):
-           print(f"\n Position: ({self.odo_x:5.2f}, {self.odo_y:5.2f}, {msg.pose.pose.position.z:5.2f}), Yaw (deg): ({self.odo_yaw:5.2f}, {np.degrees(self.odo_yaw):5.2f})")
-           
+           print("\n Position: ({:5.2f}, {:5.2f}, {:5.2f}), Yaw (deg): ({:5.2f}, {:5.2f})".format(
+                self.odo_x,
+                self.odo_y,
+                msg.pose.pose.position.z,
+                self.odo_yaw,
+                np.degrees(self.odo_yaw)
+            ))           
            #print "Linear twist: (%5.2f, %5.2f, %5.2f)" % (msg.twist.twist.linear.x,
            #                                               msg.twist.twist.linear.y, msg.twist.twist.linear.z)
            #print "Angular twist: (%5.2f, %5.2f, %5.2f)" % (msg.twist.twist.angular.x,
@@ -301,17 +321,18 @@ class FollowPathPID:
     # {'pv': True, 'po': True,
     # 'iv': True, 'io': False,
     # 'dv': False, 'do': False}):
-    def combine_linear_errors(self, err_p, err_i, err_d, err_p_a, err_i_a, err_d_a):
+    def combine_errors(self, err_d, err_a):
         # O(1), don't worry
         L = [(k, 1 if v else 0) for (k, v) in self.pid_components.items()]
         d = {k : v for (k, v) in L}
-        self.vel.linear.x = self.pid.get_linear_velocity_P(err_p) * d['pv'] \
-                + self.pid.get_linear_velocity_I(err_i) * d['iv'] \
-                + self.pid.get_linear_velocity_D(err_d) * d['dv'] \
         
-        self.vel.angular.z = self.pid.get_linear_velocity_P(err_p) * d['pv'] \
-                + self.pid.get_linear_velocity_I(err_i) * d['iv'] \
+        self.vel.linear.x = self.pid.get_linear_velocity_P(err_d) * d['pv'] \
                 + self.pid.get_linear_velocity_D(err_d) * d['dv'] \
+                + self.pid.get_linear_velocity_I(err_d) * d['iv'] \
+        
+        self.vel.angular.z = self.pid.get_angular_velocity_P(err_a) * d['po'] \
+                + self.pid.get_angular_velocity_D(err_a) * d['do'] \
+                + self.pid.get_angular_velocity_I(err_a) * d['io'] \
                     
     def move_to_point(self, x, y):
         '''Move to waypoint of coordinates (x,y).
@@ -327,34 +348,18 @@ class FollowPathPID:
         ##### your code here
         # First, find proportional error for velocity
         # I am assuming I use odometry as where I am.
-        err_dist_p = np.sqrt((xs - self.odo_pos_x) ** 2 + (ys - self.odo_pos_y) ** 2) - self.d_offset
-        
-        # Now integral error (this is weird)
-        self.pid.update_integral_error_distance(err_dist_p)
-        err_dist_i = self.pid.i_err_distance
-        
-        # Now derivative error
-        err_dist_d = 0 #TODO: fix me
-        
+        err_dist_p = np.sqrt((x - self.odo_x) ** 2 + (y - self.odo_y) ** 2) - self.distance_offset     
         
         # Now angular proportional
-        theta_desired = np.arctan2(ys - self.odo_pos_y, xs - self.odo_pos_x)
+        theta_desired = np.arctan2(y - self.odo_y, x - self.odo_x)
         err_angle = theta_desired - self.odo_yaw
         err_angle_normalized = np.arctan2(np.sin(err_angle), np.cos(err_angle))
         
-        # Now update integral
-        self.pid.update_integral_error_distance(err_angle_normalized)
-        err_angle_i = self.pid.i_err_angle_integral
-        
-        # Now derivative error
-        err_angle_d = 0 #TODO: fix me
-        
         # set velocities
-        self.combine_linear_errors(err_dist_p, err_dist_i, err_dist_d,
-                                   err_angle_normalized, err_angle_i, err_angle_d)
+        self.combine_errors(err_dist_p, err_angle_normalized)
         
         # goal reached logic (not looking at angle)
-        if abs(err_dist_d) < self.pos_tolerance:
+        if abs(err_dist_p) < self.position_tolerance:
             self.pid.reset_integral_errors()
             return True
     
@@ -400,7 +405,7 @@ class PathGenerator:
         
         self.get_next_point_in_path = path_geometries[_path][0]
         self.path_init = path_geometries[_path][1]
-
+        print("Path parameters:", path_parameters)
         self.path_init(*_path_parameters)
 
         
@@ -476,31 +481,33 @@ if __name__ == '__main__':
                                               'dv': False, 'do': False} )
 
         # read the path type from command line
-        path_type = rospy.get_param('~path', 'ellipse') 
+        path_type = rospy.get_param('~path', 'spiral') 
         print('Path type: ', path_type)
 
         # some default parameters for the paths, can be changed as wished,
         # or passed as command line parameters
-        path_parameters = { 'ellipse': (0.0, 0.0, 2.0, 3.0),
+        path_parameters = { 'ellipse': (0.0, 0.0, 3.0, 2.0),
                             'spiral' : (0.0, 0.0, 0.5),
                             'sample' : () }
                             
         path_gen = PathGenerator(path_type, path_parameters[path_type])
 
         s = 0
-        ds = 0.2 # increment in the spatial parameter s
+        ds = 0.2 # increment in the spatialx parameter s
         (xs, ys) = path_gen.get_next_point_in_path(s)
         print('Start at: ', xs, ys)
         while True:
-            if path_follow_with_PID.move_to_point(xs, ys) == True:
+            if path_follow_with_PID.move_to_point(xs, ys) :
                 s += ds
                 (xs, ys) = path_gen.get_next_point_in_path(s)
-
             # what to do if move_to_point fails?
+            path_follow_with_PID.vel_pub.publish(path_follow_with_PID.vel)
+            path_follow_with_PID.Rate.sleep()
+            path_follow_with_PID.publish_path(xs, ys)
 
         
     except Exception as e:
-        msg = f'[{rospy.get_name()}] ERROR: Node terminated'
+        msg = '[{}] ERROR: Node terminated'.format(rospy.get_name())
         rospy.loginfo(msg)
         error_type = type(e)
         error_msg = str(e)
