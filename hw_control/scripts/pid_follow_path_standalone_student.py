@@ -104,7 +104,7 @@ class PID:
     def get_linear_velocity_P(self, err_d):
         '''Get error in distance and return P component of linear velocity'''
         ##### your code here
-        return self.bound_v(self.p_gain_distance * err_d)
+        return self.p_gain_distance * err_d
 
     
     def get_linear_velocity_I(self, err_d):
@@ -112,7 +112,7 @@ class PID:
         ##### your code here
         self.update_integral_error_distance(err_d)
         err_dist_i = self.i_err_distance
-        return self.bound_v(self.i_gain_distance * err_dist_i)
+        return self.i_gain_distance * err_dist_i
 
 
     def get_linear_velocity_D(self, err_d):
@@ -120,13 +120,17 @@ class PID:
         ##### your code here
         derivative = (err_d - self.previous_error_distance) / self.i_err_dt
         self.previous_error_distance = err_d
-        return self.bound_v(self.d_gain_distance * derivative)
+        return self.d_gain_distance * derivative
 
+    def get_linear_velocity(self, err_d, p=0, i=0, d=0):
+        return self.bound_v(p * self.get_linear_velocity_P(err_d)+ 
+                            i * self.get_linear_velocity_I(err_d)+ 
+                            d * self.get_linear_velocity_D(err_d))
     
     def get_angular_velocity_P(self, err_angle):
         '''Get error in angle and return P component of angular velocity'''
         ##### your code here
-        return self.bound_o(self.p_gain_angle * err_angle)
+        return self.p_gain_angle * err_angle
 
 
     def get_angular_velocity_I(self, err_angle):
@@ -134,14 +138,19 @@ class PID:
         ##### your code here
         self.update_integral_error_angle(err_angle)
         err_angle_i = self.i_err_angle_integral
-        return self.bound_o(self.i_gain_angle * err_angle_i)
+        return self.i_gain_angle * err_angle_i
 
     def get_angular_velocity_D(self, err_angle):
         '''Get error in angle and return D component of angular velocity'''
         ##### your code here
         derivative = (err_angle - self.previous_error_angle) / self.i_err_dt
         self.previous_error_angle = err_angle
-        return self.bound_o(self.d_gain_angle * derivative)
+        return self.d_gain_angle * derivative
+    
+    def get_angular_velocity(self, err_angle, p=0, i=0, d=0):
+        return self.bound_o(p * self.get_angular_velocity_P(err_angle)+
+                            i * self.get_angular_velocity_I(err_angle)+
+                            d * self.get_angular_velocity_D(err_angle))
 
     # The following three empty methods are included for completeness, to deal with a car-like
     # vehicle with two parallel front steering wheels.
@@ -322,17 +331,12 @@ class FollowPathPID:
     # 'iv': True, 'io': False,
     # 'dv': False, 'do': False}):
     def combine_errors(self, err_d, err_a):
-        # O(1), don't worry
-        L = [(k, 1 if v else 0) for (k, v) in self.pid_components.items()]
-        d = {k : v for (k, v) in L}
+        # O(1), dont worry
+        d = {k: int(v) for k, v in self.pid_components.items()}
         
-        self.vel.linear.x = self.pid.get_linear_velocity_P(err_d) * d['pv'] \
-                + self.pid.get_linear_velocity_D(err_d) * d['dv'] \
-                + self.pid.get_linear_velocity_I(err_d) * d['iv'] \
-        
-        self.vel.angular.z = self.pid.get_angular_velocity_P(err_a) * d['po'] \
-                + self.pid.get_angular_velocity_D(err_a) * d['do'] \
-                + self.pid.get_angular_velocity_I(err_a) * d['io'] \
+        self.vel.linear.x = self.pid.get_linear_velocity(err_d, d['pv'], d['iv'], d['dv'])
+        self.vel.angular.z = self.pid.get_angular_velocity(err_a, d['po'], d['io'], d['do'])
+
                     
     def move_to_point(self, x, y):
         '''Move to waypoint of coordinates (x,y).
@@ -457,14 +461,15 @@ class PathGenerator:
         
 
     def init_sample(self):
-        self.sample_path = [ (1.,1.), (2.2, 2.2), (3.5, 2.5), (3.5, 3.1), (4.,4.) ]
+        self.sample_path = [ (1, 0), (1.6, 0.7), (1.6,2), (1.3,2.7), (0.4, 3.2), (1, 4), (2.5, 4) ] 
         self.sample_path_idx = 0
 
     def sample_path_get_next(self, s=None):
+        if self.sample_path_idx >= len(self.sample_path):
+            print('END of sample path!')
+            return (None, None)
         self.x, self.y = self.sample_path[self.sample_path_idx]
         self.sample_path_idx += 1
-        if self.sample_path_idx == len(self.sample_path):
-            print('END of sample path!')
         return (self.x, self.y)
                             
 
@@ -481,7 +486,7 @@ if __name__ == '__main__':
                                               'dv': False, 'do': False} )
 
         # read the path type from command line
-        path_type = rospy.get_param('~path', 'spiral') 
+        path_type = rospy.get_param('~path', 'sample') 
         print('Path type: ', path_type)
 
         # some default parameters for the paths, can be changed as wished,
@@ -500,10 +505,13 @@ if __name__ == '__main__':
             if path_follow_with_PID.move_to_point(xs, ys) :
                 s += ds
                 (xs, ys) = path_gen.get_next_point_in_path(s)
+                if (xs, ys) == (None, None):
+                    break
             # what to do if move_to_point fails?
             path_follow_with_PID.vel_pub.publish(path_follow_with_PID.vel)
             path_follow_with_PID.Rate.sleep()
             path_follow_with_PID.publish_path(xs, ys)
+        path_follow_with_PID.shutdown()
 
         
     except Exception as e:
