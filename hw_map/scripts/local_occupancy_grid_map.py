@@ -27,7 +27,7 @@ class OccupancyGridNode:
         self.width = int(20 * self.scanner_range * 2)
         self.height = int(20 * self.scanner_range * 2)
         # robot center at (0,0) at all times
-        self.origin = (-self.scanner_range / 2, -self.scanner_range / 2)  
+        self.origin = (-self.scanner_range, -self.scanner_range )  
         # (-3.5, -3.5)
         
         self.map = np.zeros((self.height, self.width), dtype=np.int8)
@@ -45,7 +45,6 @@ class OccupancyGridNode:
         
         self.grid = OccupancyGrid()
         self.grid_pub = rospy.Publisher("/local_map", OccupancyGrid, queue_size=10)
-
 
     def callback_scan(self, msg):
         self.scan_msg = msg
