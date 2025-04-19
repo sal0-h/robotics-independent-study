@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="hw_map" type="bug_navigation.py" name="bug_node" output="screen"/>
+
+  <node pkg="hw_map" type="wall_follower_server.py" name="wall_follower_server_node" output="screen"/>
+
+  <node pkg="hw_map" type="pose_to_target.py" name="pose_to_target_node" output="screen"/>
+</launch>

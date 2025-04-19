@@ -1,0 +1,4 @@
+float32 m
+float32 last_distance_error
+---
+bool m_line_reached
