@@ -14,11 +14,11 @@ import math
 class WallFollowerService:
     def __init__(self):
         rospy.init_node('wall_follower_service')
-        
+
         # Action rate
         self.frequency_updates = 100.0
         self.rate = rospy.Rate(self.frequency_updates)
-        
+
         self.vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=5) # Adjust topic if needed
 
         self.scan_sub = rospy.Subscriber('/scan', LaserScan, self.scan_callback)
@@ -43,30 +43,32 @@ class WallFollowerService:
         print('Goal data received.')
 
         self.last_distance_error = None
-        
+
+        self.x = -999
+        self.y = -999
         self.yaw = -999
 
         self.odom_sub = rospy.Subscriber('/odom', Odometry,
                                          self.callback_odometry, queue_size=1)
         # wait for an input from the odometry topic to be sure that pose is correctly set when start
-        while (self.yaw == -999):
+        while (self.yaw == -999 or self.x == -999 or self.y == -999):
             self.rate.sleep()
 
         self.wall_follower_service = rospy.Service('wall_follow', WallFollower, self.handle_wall_follow)
-        
+
         rospy.on_shutdown(self.shutdown)
-        
+
         # Max velocities for the robot
-        self.linear_vel_max = rospy.get_param('~max_lin_vel', 0.25)
+        self.linear_vel_max = rospy.get_param('~max_lin_vel', 0.2)
         self.angular_vel_max = rospy.get_param('~max_ang_vel', 0.85)
-        _p_gain_distance = rospy.get_param('~p_gain_distance', 0.5)
+        _p_gain_distance = rospy.get_param('~p_gain_distance', 0.22)
         _p_gain_angle = rospy.get_param('~p_gain_angle', 0.5)
-        _i_gain_distance = rospy.get_param('~i_gain_distance', 0.9)
-        _i_gain_angle = rospy.get_param('~i_gain_angle', 0.1)
+        _i_gain_distance = rospy.get_param('~i_gain_distance', 0.22)
+        _i_gain_angle = rospy.get_param('~i_gain_angle', 0.22)
         _i_err_window_len = rospy.get_param('~i_err_window_len', 50)
         _i_err_dt = rospy.get_param('~i_err_dt', 1 / self.frequency_updates)
-        _d_gain_distance = rospy.get_param('~d_gain_distance', 0.2)
-        _d_gain_angle = rospy.get_param('~d_gain_angle', 0.2)
+        _d_gain_distance = rospy.get_param('~d_gain_distance', 0.22)
+        _d_gain_angle = rospy.get_param('~d_gain_angle', 0.22)
         _v_max = self.linear_vel_max
         _v_ang_max = self.angular_vel_max
 
@@ -75,10 +77,12 @@ class WallFollowerService:
                        _i_err_window_len, _i_err_dt,
                        _d_gain_distance, _d_gain_angle,
                        _v_max, _v_ang_max)
-        
+
         rospy.loginfo("Wall follower service is ready.")
-    
+
     def callback_odometry(self, msg):
+        self.x = msg.pose.pose.position.x
+        self.y = msg.pose.pose.position.y
         self.yaw = self.quaternion_to_euler(msg)
 
     def quaternion_to_euler(self, msg):
@@ -89,19 +93,54 @@ class WallFollowerService:
 
     def scan_callback(self, msg):
         self.scan_msg = msg
-        a_min = msg.angle_min
-        a_inc = msg.angle_increment
+        a_min  = msg.angle_min
+        a_inc  = msg.angle_increment
         ranges = msg.ranges
 
         def get_range_at_angle(angle_rad):
-            index = int((angle_rad - a_min) / a_inc)
-            if 0 <= index < len(ranges):
-                return min(ranges[index], float(4))
-            else:
-                return float(4)
-        self.forward_dist = get_range_at_angle(0.0)
-        self.left_dist = get_range_at_angle(math.pi / 2)
-        self.right_dist = get_range_at_angle(3*math.pi / 2)
+            idx = int((angle_rad - a_min) / a_inc)
+            if 0 <= idx < len(ranges):
+                return min(ranges[idx], 4.0)
+            return 4.0
+
+        # --- FRONT WINDOWED AVERAGE ---
+        front_start = -math.radians(10)
+        front_end   =  math.radians(10)
+
+        front_readings = []
+        for i, angle in enumerate(np.arange(a_min,
+                                            a_min + len(ranges)*a_inc,
+                                            a_inc)):
+            r = ranges[i]
+            if front_start <= angle <= front_end and r < float('inf'):
+                front_readings.append(r)
+
+        if front_readings:
+            self.forward_dist = np.mean(front_readings)
+        else:
+            # fallback if no valid reading
+            self.forward_dist = 4.0
+
+        # --- LEFT WINDOWED AVERAGE ---
+        left_start_angle = math.pi/2 - math.radians(75)
+        left_end_angle   = math.pi/2 - math.radians(20)
+
+        left_distances = []
+        for i, angle in enumerate(np.arange(a_min,
+                                            a_min + len(ranges)*a_inc,
+                                            a_inc)):
+            r = ranges[i]
+            if left_start_angle <= angle <= left_end_angle and r < float('inf'):
+                left_distances.append(r)
+
+        if left_distances:
+            self.left_dist = np.mean(left_distances)
+        else:
+            self.left_dist = 4.0
+
+        # --- RIGHT DIRECT READING (unchanged) ---
+        self.right_dist = get_range_at_angle(3 * math.pi / 2)
+
 
     def goal_callback(self, msg):
         self.rel_x = msg.position.x
@@ -119,31 +158,31 @@ class WallFollowerService:
         y2 = np.sin(a2)
 
         sum_a1_a2 = np.arctan2(y1*x2 - y2*x1,  x1*x2 + y1*y2)
-        
+
         # print 'Angle distance: {:.3f}'.format(sum_a1_a2)
-        
+
         return sum_a1_a2
-    
+
     def rotate_for_angle_using_odometry(self, target_rotation):
         self.start_yaw = self.yaw
         velocity = Twist()
         if target_rotation < 0:
-            velocity.angular.z = -0.2
+            velocity.angular.z = -0.5
         else:
-            velocity.angular.z = 0.2
-            
+            velocity.angular.z = 0.5
+
         while abs(self.angle_distance(self.start_yaw, self.yaw)) < abs(target_rotation):
             self.vel_pub.publish(velocity)
             self.rate.sleep()
-    
+
     def handle_wall_follow(self, req):
         rospy.loginfo("Wall follow service called.")
-        target_wall_distance = 0.5
+        target_wall_distance = 0.7
         self.m = req.m
         self.last_distance_error = req.last_distance_error
-        m_line_reached = False
-        linear_speed = 0.1 # m/s for forward motion
 
+        self.rotate_for_angle_using_odometry(-math.pi / 2)
+        
         rospy.loginfo("Moving along the wall.")
 
         while True:
@@ -151,20 +190,21 @@ class WallFollowerService:
             print("Left dist:", left_dist)
             lateral_error = target_wall_distance - left_dist
             print("Lateral error:", lateral_error)
-            # if lateral error is negative, then we need to turn right
-            # else, need to turn left
-            angular_vel   = -self.pid.get_angular_velocity(lateral_error, p=1, i=0, d=0)
+            # Use the full PID controller
+            angular_vel = -self.pid.get_angular_velocity(lateral_error, p=1, i=1, d=1)
+            linear_vel = self.pid.get_linear_velocity(self.forward_dist - (target_wall_distance - 0.1), p=1, i=1, d=1)
             print("Angular_vel:", angular_vel)
-            self.move(linear_speed, angular_vel)
+            
             # Check for m-line re-encounter using relative x and y
-            current_mline_distance = self.compute_mline_distance(self.rel_x, self.rel_y)
+            current_mline_distance = self.compute_mline_distance(self.x, self.y)
             distance_error = math.hypot(self.rel_x, self.rel_y)
             # If the mline is reencountered and it is closer than the last distance error
-            if current_mline_distance < 0.05 and distance_error < self.last_distance_error:
+            if current_mline_distance < 0.1 and distance_error < self.last_distance_error:
                 rospy.loginfo("M-line reached (or close enough).")
                 m_line_reached = True
                 self.stop()
                 break
+            self.move(linear_vel, angular_vel)
             self.rate.sleep()
         self.pid.reset_integral_errors()
         self.stop()
@@ -178,8 +218,8 @@ class WallFollowerService:
 
     def stop(self):
         self.move(0.0, 0.0)
-        
-    def shutdown(self):        
+
+    def shutdown(self):
         rospy.loginfo("**** Stopping TurtleBot! ****")
         self.stop()
         rospy.sleep(1)
