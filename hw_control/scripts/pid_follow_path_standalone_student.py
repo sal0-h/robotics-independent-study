@@ -216,6 +216,7 @@ class FollowPathPID:
         # Max velocities for the robot
         self.linear_vel_max = rospy.get_param('~max_lin_vel', 0.25)
         self.angular_vel_max = rospy.get_param('~max_ang_vel', 0.85)
+        
 
         # Action rate
         self.frequency_updates = 100.0
@@ -523,7 +524,7 @@ if __name__ == '__main__':
                                               'dv': False, 'do': False} )
 
         # read the path type from command line
-        path_type = rospy.get_param('~path', 'wall') 
+        path_type = rospy.get_param('~path', 'sample') 
         print('Path type: ', path_type)
 
         # some default parameters for the paths, can be changed as wished,

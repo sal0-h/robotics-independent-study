@@ -41,8 +41,9 @@ class Bug:
         #### Initialization of PID- / control-specific variables
 
         # Minimal distance to a waypoint to declare it as reached
+        # TODO Use this
         self.position_tolerance = 0.04
-
+        # TODO Use this
         # The offset from the waypoint, to ensure a smooth and continuous motion along the path
         self.distance_offset = 0.1
 
@@ -107,23 +108,20 @@ class Bug:
         self.occupancy_grid = msg
         
     def goal_callback(self, msg):
-        self.rel_x = msg.pose.position.x
-        self.rel_y = msg.pose.position.y
+        self.rel_x = msg.position.x
+        self.rel_y = msg.position.y
         
     def compute_mline_distance(self, x, y):
         # For a line through (0, 0) with slope m: distance = |m*x - y| / sqrt(m^2 + 1)
         return abs(self.m * x - y) / math.sqrt(self.m**2 + 1)
     
-    
+    # REWRITE
     def is_path_blocked(self):
-        # Use the occupancy grid to determine if there is an obstacle in front of the robot.
-        # Here, we simply check a small region (window) around the robot in the grid.
-        # This is a placeholder—you may need a more advanced method.
         threshold = 50  # occupancy threshold (0 free, 100 occupied)
-        window_size = 5  # number of cells around robot to check
-        # Assuming the robot is at the center of the occupancy grid:
+        window_size = 5  
+        
         center_i = len(self.occupancy_grid.data) // 2
-        blocked_count = 0
+        
         # Row-major error
         grid_data = np.array(self.occupancy_grid.data).reshape((self.occupancy_grid.info.height,
                                                                 self.occupancy_grid.info.width))
@@ -132,7 +130,6 @@ class Bug:
         start_col = max(0, center_i - window_size)
         end_col = min(grid_data.shape[1], center_i + window_size)
         region = grid_data[start_row:end_row, start_col:end_col]
-        # If many cells are occupied, consider the path blocked.
         return np.count_nonzero(region > threshold) > (window_size ** 2) * 0.3
     
     def combine_errors(self, err_d, err_a):
@@ -143,8 +140,7 @@ class Bug:
         self.vel.angular.z = self.pid.get_angular_velocity(err_a, d['po'], d['io'], d['do'])
     
     def move_direct(self):
-        # Direct motion: aim to reduce the distance and angle error toward the goal.
-        # Use PID to compute linear and angular speeds.
+        
         distance_error = math.hypot(self.rel_x, self.rel_y)
         angle_error = math.atan2(self.rel_y, self.rel_x)
         
@@ -153,7 +149,7 @@ class Bug:
         
         # Check if there is an obstacle ahead.
         if self.is_path_blocked():
-            rospy.loginfo("Path is blocked. Switching to obstacle avoidance (wall-following).")
+            rospy.loginfo("Path is cooked. Switching to OA.")
             self.moving_to_goal = False
         # Check if the goal is reached.
         if distance_error < self.position_tolerance:
@@ -162,50 +158,15 @@ class Bug:
         return False  # Not reached yet.
     
     def get_side_distance(self):
-        # Extract grid dimensions and resolution
-        width = self.occupancy_grid.info.width
-        height = self.occupancy_grid.info.height
-        resolution = self.occupancy_grid.info.resolution
-
-        # Convert the 1D data array into a 2D numpy array for easier indexing
-        grid_data = np.array(self.occupancy_grid.data).reshape((height, width))
-
-        # Determine the robot's position in the grid (assumed to be at the center)
-        robot_row = height // 2
-        robot_col = width // 2
-
-        # Initialize variables to scan leftwards
-        steps = 0
-        col = robot_col - 1  # Start checking the cell immediately to the left
-
-        # Define the occupancy threshold (cells with values >= 100 are considered occupied)
-        threshold = 100
-
-        # Scan leftwards until an occupied cell is found or the edge of the grid is reached
-        while col >= 0:
-            if grid_data[robot_row][col] >= threshold:
-                break
-            steps += 1
-            col -= 1
-
-        # Calculate the lateral distance by multiplying the number of free cells by the resolution
-        return steps * resolution
-
+        pass
+        # TODO
+        
     def move_around(self):
-        # Obtain the measured lateral distance
-        measured_distance = self.get_side_distance()  #TODO
-
-        desired_distance = 0.1  
-
-        # Step 3: Compute the error
-        error_distance = measured_distance - desired_distance
-
-        # Use the PID controller to compute the angular correction.
-        # Here, we use PID's angular velocity computation function.
-        # Choose the PID gains (p, i, d) appropriately, e.g., p=1, i=0.5, d=0.1.
+        
+        #TODO: Get some error
+        error_distance = 0
         ang_correction = self.pid.get_angular_velocity(error_distance, p=1, i=1, d=1)
 
-        # Set velocities: maintain a constant, low forward speed, adjust angular velocity based on PID.
         lin_vel = 0.1  # small forward speed during wall-following
         self.vel.linear = Vector3(lin_vel, 0.0, 0.0)
         self.vel.angular = Vector3(0.0, 0.0, ang_correction)
