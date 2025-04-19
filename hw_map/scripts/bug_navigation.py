@@ -3,10 +3,11 @@
 import rospy
 
 from geometry_msgs.msg import Pose,  Quaternion, Twist, Vector3
-from nav_msgs.msg import OccupancyGrid
+from sensor_msgs.msg import LaserScan
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 import numpy as np
 import math
+import random
 from pid import PID
 
 class Bug:
@@ -83,13 +84,15 @@ class Bug:
             self.Rate.sleep()
         print('done!')
 
-        self.grid_sub = rospy.Subscriber('local_map', OccupancyGrid, self.grid_callback)
+        self.scan_sub = rospy.Subscriber('/scan', LaserScan, self.scan_callback)
 
         # wait for an input from the to_target topic
-        self.occupancy_grid = None
+        self.left_dist = None
+        self.right_dist = None
+        self.forward_dist = None
 
         print('Wait for first data...')
-        while (self.occupancy_grid == None):
+        while (self.left_dist == self.right_dist == self.forward_dist):
             self.Rate.sleep()
         print('done!')
         
@@ -104,8 +107,30 @@ class Bug:
         # Moving towards, as opposed to moving around goal
         self.moving_to_goal = True
         
-    def grid_callback(self, msg):
-        self.occupancy_grid = msg
+        self.forward_dist_threshold = 1
+        self.forward_dist_threshold_when_wall_following = 0.5
+        self.lateral_dist_threshold = 0.5
+        
+        self.left_or_right = None
+        self.last_distance_error = None
+        
+    def scan_callback(self, msg):
+        self.scan_msg = msg
+        a_min = msg.angle_min
+        a_inc = msg.angle_increment
+        ranges = msg.ranges
+        
+        def get_range_at_angle(angle_rad):
+            index = int((angle_rad - a_min) / a_inc)
+            if 0 <= index < len(ranges):
+                return ranges[index]
+            else:
+                # I made it 10 so it would start turning regardless
+                return float(10)  
+        
+        self.forward_dist = get_range_at_angle(0.0)          
+        self.left_dist = get_range_at_angle(math.pi / 2)     
+        self.right_dist = get_range_at_angle(-math.pi / 2)   
         
     def goal_callback(self, msg):
         self.rel_x = msg.position.x
@@ -117,20 +142,7 @@ class Bug:
     
     # REWRITE
     def is_path_blocked(self):
-        threshold = 50  # occupancy threshold (0 free, 100 occupied)
-        window_size = 5  
-        
-        center_i = len(self.occupancy_grid.data) // 2
-        
-        # Row-major error
-        grid_data = np.array(self.occupancy_grid.data).reshape((self.occupancy_grid.info.height,
-                                                                self.occupancy_grid.info.width))
-        start_row = max(0, center_i - window_size)
-        end_row = min(grid_data.shape[0], center_i + window_size)
-        start_col = max(0, center_i - window_size)
-        end_col = min(grid_data.shape[1], center_i + window_size)
-        region = grid_data[start_row:end_row, start_col:end_col]
-        return np.count_nonzero(region > threshold) > (window_size ** 2) * 0.3
+        return self.forward_dist < self.forward_dist_threshold
     
     def combine_errors(self, err_d, err_a):
         # O(1), dont worry
@@ -151,21 +163,32 @@ class Bug:
         if self.is_path_blocked():
             rospy.loginfo("Path is cooked. Switching to OA.")
             self.moving_to_goal = False
+            # -1 is left, 1 is right
+            self.left_or_right = random.choice([-1, 1])
+            self.last_distance_error = distance_error
         # Check if the goal is reached.
         if distance_error < self.position_tolerance:
             rospy.loginfo("Goal reached!")
-            return True  # Indicate that the goal was reached.
-        return False  # Not reached yet.
-    
-    def get_side_distance(self):
-        pass
-        # TODO
+            return True  
+        return False 
         
     def move_around(self):
         
-        #TODO: Get some error
-        error_distance = 0
-        ang_correction = self.pid.get_angular_velocity(error_distance, p=1, i=1, d=1)
+        
+        # Get errors from left or right
+        # if heading straight into a wall
+        if self.left_or_right == -1:
+            lateral_error = self.left_dist - self.lateral_dist_threshold
+        else:
+            lateral_error = -(self.right_dist - self.lateral_dist_threshold)
+        
+        # Add the error from forward distance so turning to one side is intensified 
+        forward_error = self.forward_dist - self.forward_dist_threshold_when_wall_following
+        
+        # before: total_error = lateral_error + self.forward_error_gain * forward_error
+        total_error = lateral_error \
+                    + self.left_or_right * forward_error
+        ang_correction = self.pid.get_angular_velocity(total_error, p=1, i=1, d=1)
 
         lin_vel = 0.1  # small forward speed during wall-following
         self.vel.linear = Vector3(lin_vel, 0.0, 0.0)
@@ -173,8 +196,9 @@ class Bug:
 
         # Monitor when the robot re-encounters the m-line and switch back to moving_to_goal.
         mline_tol = 0.1
+        distance_error = math.hypot(self.rel_x, self.rel_y)
         current_mline_distance = self.compute_mline_distance(self.rel_x, self.rel_y)
-        if current_mline_distance < mline_tol:
+        if current_mline_distance < mline_tol and distance_error < self.last_distance_error:
             rospy.loginfo("Re-encountered m-line. Resuming goal-directed motion.")
             self.moving_to_goal = True
             self.pid.reset_integral_errors()
