@@ -43,8 +43,8 @@ class RelativePose:
         ))
         
         # Goal position
-        self.goal_x = rospy.get_param("~goal_x", 5.5)
-        self.goal_y = rospy.get_param("~goal_y", 5)
+        self.goal_x = rospy.get_param("~goal_x", 20)
+        self.goal_y = rospy.get_param("~goal_y", 20)
         
         # Publisher
         self.pub = rospy.Publisher("to_target", Pose, queue_size=5)

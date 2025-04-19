@@ -104,9 +104,7 @@ class Bug:
         # Moving towards, as opposed to moving around goal
         self.moving_to_goal = True
 
-        self.forward_dist_threshold = 1
-        self.forward_dist_threshold_when_wall_following = 0.5
-        self.lateral_dist_threshold = 0.5
+        self.forward_dist_threshold = 0.5
 
         self.left_or_right = None
         self.last_distance_error = None

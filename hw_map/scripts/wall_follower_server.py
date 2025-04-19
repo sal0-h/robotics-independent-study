@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 
+from re import I
 import rospy
 from hw_map.srv import WallFollower, WallFollowerResponse
 from geometry_msgs.msg import Twist, Vector3, Pose
@@ -41,15 +42,6 @@ class WallFollowerService:
             rospy.sleep(0.1)
         print('Goal data received.')
 
-        self.initial_goal_pose_x = self.rel_x
-        self.initial_goal_pose_y = self.rel_y
-
-        # Define the m line based on the initial goal
-        if self.initial_goal_pose_x != 0:
-            self.m = self.initial_goal_pose_y / self.initial_goal_pose_x
-        else:
-            self.m = self.initial_goal_pose_y / (self.initial_goal_pose_x + 0.1e-7)
-
         self.last_distance_error = None
         
         self.yaw = -999
@@ -68,7 +60,7 @@ class WallFollowerService:
         self.linear_vel_max = rospy.get_param('~max_lin_vel', 0.25)
         self.angular_vel_max = rospy.get_param('~max_ang_vel', 0.85)
         _p_gain_distance = rospy.get_param('~p_gain_distance', 0.5)
-        _p_gain_angle = rospy.get_param('~p_gain_angle', 3)
+        _p_gain_angle = rospy.get_param('~p_gain_angle', 0.5)
         _i_gain_distance = rospy.get_param('~i_gain_distance', 0.9)
         _i_gain_angle = rospy.get_param('~i_gain_angle', 0.1)
         _i_err_window_len = rospy.get_param('~i_err_window_len', 50)
@@ -94,7 +86,6 @@ class WallFollowerService:
                       msg.pose.pose.orientation.z, msg.pose.pose.orientation.w)
         (roll, pitch, yaw) = tf.transformations.euler_from_quaternion(quaternion)
         return yaw
-        
 
     def scan_callback(self, msg):
         self.scan_msg = msg
@@ -105,13 +96,12 @@ class WallFollowerService:
         def get_range_at_angle(angle_rad):
             index = int((angle_rad - a_min) / a_inc)
             if 0 <= index < len(ranges):
-                return min(ranges[index], float(10))
+                return min(ranges[index], float(4))
             else:
-                return float(10)
-
+                return float(4)
         self.forward_dist = get_range_at_angle(0.0)
         self.left_dist = get_range_at_angle(math.pi / 2)
-        self.right_dist = get_range_at_angle(-math.pi / 2)
+        self.right_dist = get_range_at_angle(3*math.pi / 2)
 
     def goal_callback(self, msg):
         self.rel_x = msg.position.x
@@ -150,41 +140,27 @@ class WallFollowerService:
         rospy.loginfo("Wall follow service called.")
         target_wall_distance = 0.5
         self.m = req.m
-        self.last_distance_error = req.last_distance_error - 0.1
+        self.last_distance_error = req.last_distance_error
         m_line_reached = False
         linear_speed = 0.1 # m/s for forward motion
 
-        # Initial movement to get close to the wall
-        rospy.loginfo("Moving towards the wall...")
-        while True:
-            forward_dist = self.forward_dist
-            if forward_dist > 0.7: # 
-                self.move(linear_speed, 0.0) # Move forward slowly
-            else:
-                rospy.loginfo("Close to the wall, starting rotation.")
-                break
-            self.rate.sleep()
-        self.stop()
+        rospy.loginfo("Moving along the wall.")
 
-        # Rotate 90 degrees
-        rospy.loginfo("Rotating 90 degrees...")
-        target_rotation = -math.pi / 2.0 # Rotate right
-        self.rotate_for_angle_using_odometry(target_rotation)
-
-        rospy.loginfo("Rotation complete, moving along the wall.")
-
-        
         while True:
             left_dist = self.left_dist
+            print("Left dist:", left_dist)
             lateral_error = target_wall_distance - left_dist
-            angular_vel = self.pid.get_angular_velocity(-lateral_error, p=1, i=1, d=1) 
+            print("Lateral error:", lateral_error)
+            # if lateral error is negative, then we need to turn right
+            # else, need to turn left
+            angular_vel   = -self.pid.get_angular_velocity(lateral_error, p=1, i=0, d=0)
+            print("Angular_vel:", angular_vel)
             self.move(linear_speed, angular_vel)
-
             # Check for m-line re-encounter using relative x and y
             current_mline_distance = self.compute_mline_distance(self.rel_x, self.rel_y)
             distance_error = math.hypot(self.rel_x, self.rel_y)
             # If the mline is reencountered and it is closer than the last distance error
-            if current_mline_distance < 0.1 and distance_error < self.last_distance_error:
+            if current_mline_distance < 0.05 and distance_error < self.last_distance_error:
                 rospy.loginfo("M-line reached (or close enough).")
                 m_line_reached = True
                 self.stop()
