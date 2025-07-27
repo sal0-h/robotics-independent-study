@@ -78,8 +78,11 @@ class OccupancyGridNode:
         self.grid.info.resolution = self.resolution
         self.grid.info.width = self.width
         self.grid.info.height = self.height
-        self.grid.info.origin.position.x = self.origin[0]
-        self.grid.info.origin.position.y = self.origin[1]
+        self.grid.info.origin.position.x = -self.width * self.resolution / 2
+        self.grid.info.origin.position.y = -self.height * self.resolution / 2
+        self.grid.info.origin.position.z = 0.0
+        self.grid.info.origin.orientation.w = 1.0  # no rotation
+
         
         # This does row by row, if im not mistaken
         self.grid.data = self.map.flatten().tolist()

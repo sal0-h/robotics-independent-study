@@ -2,7 +2,7 @@
 ########################## BUG 2 ###############################################
 import rospy
 from geometry_msgs.msg import Pose,  Quaternion, Twist, Vector3
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 import numpy as np
 import math
@@ -67,6 +67,7 @@ class VFH:
         self.goal_sub = rospy.Subscriber('to_target', Pose, self.goal_callback)
 
         # wait for an input from the to_target topic
+        # rel_x and rel_y are relative pose of the goal position w.r.t. the current robot position.
         self.rel_x = -999
         self.rel_y = -999
 
@@ -84,13 +85,63 @@ class VFH:
         while (self.grid == None):
             self.rate.sleep()
         print('grid data received!')
+        
+        # self.odom_sub = rospy.Subscriber('odom', Odometry, self.callback_odometry)
 
-        self.initial_goal_pose_x = self.rel_x
-        self.initial_goal_pose_y = self.rel_y
+        # # wait for an input from the odometry topic
+        # self.odo_x = -999
+        # self.odo_y = -999
+        # self.odo_yaw = -999
 
+        # print('Wait for first odometry data...')
+        # while (self.odo_x == self.odo_y == self.odo_yaw):
+        #     self.rate.sleep()
+        # print('done!')
+
+        # define constants for VFH
+        self.angular_resolution = 5 # degrees
+        self.num_sectors = 360 // self.angular_resolution
+        
+        self.goal_tolerance = 0.1
+        self.wide_threshold = 8
+        
+
+    # def callback_odometry(self, msg):
+    #     self.odo_x = msg.pose.pose.position.x
+    #     self.odo_y = msg.pose.pose.position.y
+    #     quaternion = msg.pose.pose.orientation
+    #     (_, _, self.odo_yaw) = euler_from_quaternion((quaternion.x, quaternion.y, 
+    #                                                               quaternion.z, quaternion.w))
 
     def grid_callback(self, msg):
         self.grid = msg.data
+        width = msg.info.width
+        height = msg.info.height
+        resolution = msg.info.resolution
+
+        robot_i = height // 2
+        robot_j = width // 2
+
+        self.grid_2d = np.reshape(self.grid, (height, width))
+        # should change
+        self.hist = np.zeros(self.num_sectors, dtype=float)
+        for i in range(height):
+            for j in range(width):
+                if self.grid_2d[i][j] >= 50:
+                    # how many cells away from robot
+                    delta_i = i - robot_i
+                    delta_j = j - robot_j
+                    delta_x = delta_j * resolution
+                    delta_y = delta_i * resolution
+
+                    d = np.hypot(delta_x, delta_y)
+                    f = np.arctan2(delta_y, delta_x)
+                    
+                    b = math.floor((f % (2 * math.pi)) / np.deg2rad(self.angular_resolution))
+                    
+                    M = (self.grid_2d[i][j] ** 2) / (d ** 2)
+                    
+                    self.hist[b] += M                   
 
     def goal_callback(self, msg):
         self.rel_x = msg.position.x
@@ -102,10 +153,75 @@ class VFH:
 
         self.vel.linear.x = self.pid.get_linear_velocity(err_d, d['pv'], d['iv'], d['dv'])
         self.vel.angular.z = self.pid.get_angular_velocity(err_a, d['po'], d['io'], d['do'])
-
+    
     def move_to_goal(self):
-        # Return true if goal reached. Else, tweak velocities and call it a day
-        pass
+        # If arrvied return, ow.w tweak velocities and continue
+        dist_goal = math.hypot(self.rel_x, self.rel_y)
+        if dist_goal < self.goal_tolerance:
+            self.brake()
+            return True
+
+        # ompute goal sector in robot frame
+        theta_goal = math.atan2(self.rel_y, self.rel_x)          
+        theta_goal = theta_goal % (2 * math.pi)                  
+        sector_width = math.radians(self.angular_resolution)
+        kgoal = int(theta_goal // sector_width)
+
+        fs = [k for k, v in enumerate(self.hist) if v < self.obstacle_threshold]
+        if not fs:
+            self.brake()
+            # totally blocked
+            return "BLOCKED"  
+
+        #  candidate valleys
+        N = self.num_sectors
+        valleys = []
+        # linear runs
+        start = fs[0]
+        prev = fs[0]
+        for k in fs[1:]:
+            if k == prev + 1:
+                prev = k
+            else:
+                valleys.append((start, prev))
+                start = prev = k
+        valleys.append((start, prev))
+        # merge wrap‐around
+        if valleys[0][0] == 0 and valleys[-1][1] == N-1:
+            kn, kf = valleys[-1][0], valleys[0][1] + N
+            valleys[0] = (kn, kf)
+            valleys.pop()
+
+        # Case 1: goal sector inside a valley?
+        for kn, kf in valleys:
+            # account for wrap 
+            if kn <= kgoal <= kf or kn <= (kgoal + N) <= kf:
+                kbest = kgoal
+                break
+        else:
+            # classify wide vs narrow
+            wide = [(kn, kf) for kn, kf in valleys if (kf - kn + 1) > self.wide_threshold]
+            narrow = [(kn, kf) for kn, kf in valleys if (kf - kn + 1) <= self.wide_threshold]
+
+            def circ_dist(a, b):
+                d = abs(a - b)
+                return min(d, N - d)
+
+            if wide:
+                # Case 2: pick wide valley whose center is closest to kgoal
+                centers = [((kn + kf)//2 % N, (kn, kf)) for kn, kf in wide]
+                kbest, _ = min(centers, key=lambda t: circ_dist(t[0], kgoal))
+            else:
+                # Case 3: pick narrow valley midpoint closest to kgoal
+                centers = [((kn + kf)//2 % N, (kn, kf)) for kn, kf in narrow]
+                kbest, _ = min(centers, key=lambda t: circ_dist(t[0], kgoal))
+
+        theta_best = (kbest + 0.5) * sector_width
+        err_a = (theta_best + math.pi) % (2 * math.pi) - math.pi
+        err_d = dist_goal
+
+        self.combine_errors(err_d, err_a)
+        return False
 
     def brake(self):
         self.vel.linear = Vector3(0.0, 0.0, 0.0)
@@ -132,9 +248,12 @@ if __name__ == '__main__':
                         'iv':True, 'io':False,
                         'dv': False, 'do': False} )
         while not rospy.is_shutdown():
-            if navigation.move_to_goal():
+            reached = navigation.move_to_goal()
+            if reached == "BLOCKED":
+                print("BLOCKED")
                 break
-            
+            elif reached:
+                break            
             navigation.vel_pub.publish(navigation.vel)
             navigation.Rate.sleep()
         navigation.shutdown()
